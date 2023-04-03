@@ -13,6 +13,150 @@ from pymatgen.core.structure import Structure
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.dataloader import default_collate
 from torch.utils.data.sampler import SubsetRandomSampler
+import amd
+from scipy.spatial.distance import pdist, squareform
+import collections
+
+
+
+def _collapse_into_groups(overlapping):
+    """The vector `overlapping` indicates for each pair of items in a set whether 
+    or not the items overlap, in the shape of a condensed distance matrix. Returns
+    a list of groups of indices where all items in the same group overlap."""
+
+    overlapping = squareform(overlapping)
+    group_nums = {} # row_ind: group number
+    group = 0
+    for i, row in enumerate(overlapping):
+        if i not in group_nums:
+            group_nums[i] = group
+            group += 1
+
+            for j in np.argwhere(row).T[0]:
+                if j not in group_nums:
+                    group_nums[j] = group_nums[i]
+
+    groups = collections.defaultdict(list)
+    for row_ind, group_num in sorted(group_nums.items()):
+        groups[group_num].append(row_ind)
+    groups = list(groups.values())
+
+    return groups
+
+
+def custom_PDD(
+        periodic_set,
+        k: int,
+        lexsort: bool = False,
+        collapse: bool = False,
+        collapse_tol: float = 1e-4,
+        return_row_groups: bool = True,
+        constrained: bool = True,
+) -> np.ndarray:
+    """The PDD of a periodic set (crystal) up to k.
+    Parameters
+    ----------
+    periodic_set : :class:`.periodicset.PeriodicSet`  tuple of :class:`numpy.ndarray` s
+        A periodic set represented by a :class:`.periodicset.PeriodicSet` or
+        by a tuple (motif, cell) with coordinates in Cartesian form and a square unit cell.
+    k : int
+        The returned PDD has k+1 columns, an additional first column for row weights.
+        k is the number of neighbours considered for each atom in the unit cell 
+        to make the PDD.
+    lexsort : bool, default True
+        Lexicographically order the rows. Default True.
+    collapse: bool, default True
+        Collapse repeated rows (within the tolerance ``collapse_tol``). Default True.
+    collapse_tol: float, default 1e-4
+        If two rows have all elements closer than ``collapse_tol``, they are merged and
+        weights are given to rows in proportion to the number of times they appeared.
+        Default is 0.0001.
+    return_row_groups: bool, default False
+        Return data about which PDD rows correspond to which points.
+        If True, a tuple is returned ``(pdd, groups)`` where ``groups[i]`` 
+        contains the indices of the point(s) corresponding to ``pdd[i]``. 
+        Note that these indices are for the asymmetric unit of the set, whose
+        indices in ``periodic_set.motif`` are accessible through 
+        ``periodic_set.asymmetric_unit``.
+    Returns
+    -------
+    numpy.ndarray
+        A :class:`numpy.ndarray` with k+1 columns, the PDD of ``periodic_set`` up to k.
+        The first column contains the weights of rows. If ``return_row_groups`` is True, 
+        returns a tuple (:class:`numpy.ndarray`, list).
+    Examples
+    --------
+    Make list of PDDs with ``k=100`` for crystals in mycif.cif::
+        pdds = []
+        for periodic_set in amd.CifReader('mycif.cif'):
+            # do not lexicographically order rows
+            pdds.append(amd.PDD(periodic_set, 100, lexsort=False))
+    Make list of PDDs with ``k=10`` for crystals in these CSD refcode families::
+        pdds = []
+        for periodic_set in amd.CSDReader(['HXACAN', 'ACSALA'], families=True):
+            # do not collapse rows
+            pdds.append(amd.PDD(periodic_set, 10, collapse=False))
+    Manually pass a periodic set as a tuple (motif, cell)::
+        # simple cubic lattice
+        motif = np.array([[0,0,0]])
+        cell = np.array([[1,0,0], [0,1,0], [0,0,1]])
+        cubic_amd = amd.PDD((motif, cell), 100)
+    """
+
+    motif, cell, asymmetric_unit, weights = _extract_motif_cell(periodic_set)
+    dists, cloud, inds = amd.nearest_neighbours(motif, cell, asymmetric_unit, k)
+    groups = [[i] for i in range(len(dists))]
+
+    
+    if collapse and collapse_tol >= 0:
+        overlapping = pdist(dists, metric='chebyshev')
+        overlapping = overlapping <= collapse_tol
+        types_match = pdist(periodic_set.types.reshape((-1,1))) == 0
+        if constrained:
+            overlapping = overlapping & types_match
+        if overlapping.any():
+            groups = _collapse_into_groups(overlapping)
+            weights = np.array([sum(weights[group]) for group in groups])
+            dists = np.array([np.average(dists[group], axis=0) for group in groups])
+
+    pdd = np.hstack((weights[:, None], dists))
+
+    if lexsort:
+        lex_ordering = np.lexsort(np.rot90(dists))
+        if return_row_groups:
+            groups = [groups[i] for i in lex_ordering]
+        pdd = pdd[lex_ordering]
+
+    if return_row_groups:
+        return pdd, groups, inds, cloud
+    else:
+        return pdd, inds, cloud
+
+
+def _extract_motif_cell(pset: amd.PeriodicSet):
+    """``pset`` is either a
+    :class:`amd.PeriodicSet <.periodicset.PeriodicSet>` or a tuple of
+    :class:`numpy.ndarray` s (motif, cell). If possible, extracts the
+    asymmetric unit and wyckoff multiplicities.
+    """
+
+    if isinstance(pset, amd.PeriodicSet):
+        motif, cell = pset.motif, pset.cell
+        asym_unit = pset.asymmetric_unit
+        wyc_muls = pset.wyckoff_multiplicities
+        if asym_unit is None or wyc_muls is None:
+            asymmetric_unit = motif
+            weights = np.full((len(motif), ), 1 / len(motif))
+        else:
+            asymmetric_unit = pset.motif[asym_unit]
+            weights = wyc_muls / np.sum(wyc_muls)
+    else:
+        motif, cell = pset
+        asymmetric_unit = motif
+        weights = np.full((len(motif), ), 1 / len(motif))
+
+    return motif, cell, asymmetric_unit, weights
+
 
 
 def get_train_val_test_loader(dataset, collate_fn=default_collate,
@@ -249,6 +393,7 @@ class AtomCustomJSONInitializer(AtomInitializer):
             self._embedding[key] = np.array(value, dtype=float)
 
 
+
 class CIFData(Dataset):
     """
     The CIFData dataset is a wrapper for a dataset where the crystal structures
@@ -309,6 +454,7 @@ class CIFData(Dataset):
             self.id_prop_data = [row for row in reader]
         random.seed(random_seed)
         random.shuffle(self.id_prop_data)
+        self.ids_to_supercell = random.sample(range(36000), 2000)
         atom_init_file = os.path.join(self.root_dir, 'atom_init.json')
         assert os.path.exists(atom_init_file), 'atom_init.json does not exist!'
         self.ari = AtomCustomJSONInitializer(atom_init_file)
@@ -320,10 +466,11 @@ class CIFData(Dataset):
     @functools.lru_cache(maxsize=None)  # Cache loaded structures
     def __getitem__(self, idx):
         cif_id, target = self.id_prop_data[idx]
-        crystal = Structure.from_file(os.path.join(self.root_dir,
-                                                   cif_id+'.cif'))
-        atom_fea = np.vstack([self.ari.get_atom_fea(crystal[i].specie.number)
-                              for i in range(len(crystal))])
+        crystal = Structure.from_file(os.path.join(self.root_dir,cif_id+'.cif'))
+        #print(cif_id)
+        if cif_id in self.ids_to_supercell:
+            crystal.make_supercell(2)
+        atom_fea = np.vstack([self.ari.get_atom_fea(crystal[i].specie.number) for i in range(len(crystal))])
         atom_fea = torch.Tensor(atom_fea)
         all_nbrs = crystal.get_all_neighbors(self.radius, include_index=True)
         all_nbrs = [sorted(nbrs, key=lambda x: x[1]) for nbrs in all_nbrs]
@@ -331,19 +478,128 @@ class CIFData(Dataset):
         for nbr in all_nbrs:
             if len(nbr) < self.max_num_nbr:
                 warnings.warn('{} not find enough neighbors to build graph. '
-                              'If it happens frequently, consider increase '
-                              'radius.'.format(cif_id))
+                                'If it happens frequently, consider increase '
+                                'radius.'.format(cif_id))
                 nbr_fea_idx.append(list(map(lambda x: x[2], nbr)) +
-                                   [0] * (self.max_num_nbr - len(nbr)))
+                                    [0] * (self.max_num_nbr - len(nbr)))
                 nbr_fea.append(list(map(lambda x: x[1], nbr)) +
-                               [self.radius + 1.] * (self.max_num_nbr -
-                                                     len(nbr)))
+                                [self.radius + 1.] * (self.max_num_nbr -
+                                                        len(nbr)))
             else:
-                nbr_fea_idx.append(list(map(lambda x: x[2],
-                                            nbr[:self.max_num_nbr])))
-                nbr_fea.append(list(map(lambda x: x[1],
-                                        nbr[:self.max_num_nbr])))
+                nbr_fea_idx.append(list(map(lambda x: x[2], nbr[:self.max_num_nbr])))
+                nbr_fea.append(list(map(lambda x: x[1], nbr[:self.max_num_nbr])))
         nbr_fea_idx, nbr_fea = np.array(nbr_fea_idx), np.array(nbr_fea)
+        nbr_fea = self.gdf.expand(nbr_fea)
+        atom_fea = torch.Tensor(atom_fea)
+        nbr_fea = torch.Tensor(nbr_fea)
+        nbr_fea_idx = torch.LongTensor(nbr_fea_idx)
+        target = torch.Tensor([float(target)])
+        return (atom_fea, nbr_fea, nbr_fea_idx), target, cif_id
+
+
+
+def pdd_to_graph_compact(ps, pdd, inds, groups):
+    indices_in_graph = [i[0] for i in groups]
+    atom_features = ps.types[indices_in_graph]
+    bond_features = pdd[:, 1:]
+    inds = inds % ps.types.shape[0]
+    inds = inds[indices_in_graph]
+    group_mapping = {j:i[0] for i in groups for j in i}
+    d = {b:a for a,b in enumerate(indices_in_graph)}
+    inds = np.array([d[group_mapping[i]] for i in inds.flatten()]).reshape(inds.shape)
+    return (atom_features,
+            bond_features, 
+            inds)
+
+
+
+class PDDData(Dataset):
+    """
+    The CIFData dataset is a wrapper for a dataset where the crystal structures
+    are stored in the form of CIF files. The dataset should have the following
+    directory structure:
+
+    root_dir
+    ├── id_prop.csv
+    ├── atom_init.json
+    ├── id0.cif
+    ├── id1.cif
+    ├── ...
+
+    id_prop.csv: a CSV file with two columns. The first column recodes a
+    unique ID for each crystal, and the second column recodes the value of
+    target property.
+
+    atom_init.json: a JSON file that stores the initialization vector for each
+    element.
+
+    ID.cif: a CIF file that recodes the crystal structure, where ID is the
+    unique ID for the crystal.
+
+    Parameters
+    ----------
+
+    root_dir: str
+        The path to the root directory of the dataset
+    max_num_nbr: int
+        The maximum number of neighbors while constructing the crystal graph
+    radius: float
+        The cutoff radius for searching neighbors
+    dmin: float
+        The minimum distance for constructing GaussianDistance
+    step: float
+        The step size for constructing GaussianDistance
+    random_seed: int
+        Random seed for shuffling the dataset
+
+    Returns
+    -------
+
+    atom_fea: torch.Tensor shape (n_i, atom_fea_len)
+    nbr_fea: torch.Tensor shape (n_i, M, nbr_fea_len)
+    nbr_fea_idx: torch.LongTensor shape (n_i, M)
+    target: torch.Tensor shape (1, )
+    cif_id: str or int
+    """
+    def __init__(self, root_dir, max_num_nbr=12, collapse_tol=1e-4, constrained=False, radius=8, dmin=0, step=0.2,
+                 random_seed=123):
+        self.root_dir = root_dir
+        
+        self.max_num_nbr, self.radius = int(max_num_nbr), radius
+        assert os.path.exists(root_dir), 'root_dir does not exist!'
+        id_prop_file = os.path.join(self.root_dir, 'id_prop.csv')
+        assert os.path.exists(id_prop_file), 'id_prop.csv does not exist!'
+        with open(id_prop_file) as f:
+            reader = csv.reader(f)
+            self.id_prop_data = [row for row in reader]
+        random.seed(random_seed)
+        random.shuffle(self.id_prop_data)
+        self.id_prop_supercell = self.id_prop_data[:2000]
+        atom_init_file = os.path.join(self.root_dir, 'atom_init.json')
+        assert os.path.exists(atom_init_file), 'atom_init.json does not exist!'
+        self.ari = AtomCustomJSONInitializer(atom_init_file)
+        self.gdf = GaussianDistance(dmin=dmin, dmax=self.radius, step=step)
+        self.collapse_tol = float(collapse_tol)
+        self.constrained = constrained
+        print("Col tol is " + str(collapse_tol))
+
+    def __len__(self):
+        return len(self.id_prop_data)
+
+    @functools.lru_cache(maxsize=None)  # Cache loaded structures
+    def __getitem__(self, idx):
+        cif_id, target = self.id_prop_data[idx]
+        #print(cif_id)
+        reader = amd.CifReader(os.path.join(self.root_dir,cif_id+'.cif'))
+        ps = reader.read()
+        pdd, groups, inds, _ = custom_PDD(ps, k=self.max_num_nbr, collapse=True, collapse_tol=self.collapse_tol, constrained=self.constrained)
+        weights = pdd[:, 0].reshape((-1,1))
+        atom_fea, nbr_fea, nbr_fea_idx = pdd_to_graph_compact(ps, pdd, inds, groups)        
+        
+        atom_fea = np.vstack([self.ari.get_atom_fea(i) for i in atom_fea])
+        atom_fea = np.concatenate([weights, atom_fea], axis=1)
+        atom_fea = torch.Tensor(atom_fea)
+        #nbr_fea = weights * nbr_fea
         nbr_fea = self.gdf.expand(nbr_fea)
         atom_fea = torch.Tensor(atom_fea)
         nbr_fea = torch.Tensor(nbr_fea)

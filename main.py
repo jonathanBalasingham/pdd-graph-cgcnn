@@ -15,6 +15,7 @@ from torch.autograd import Variable
 from torch.optim.lr_scheduler import MultiStepLR
 
 from cgcnn.data import CIFData
+from cgcnn.data import PDDData
 from cgcnn.data import collate_pool, get_train_val_test_loader
 from cgcnn.model import CrystalGraphConvNet
 
@@ -77,7 +78,8 @@ parser.add_argument('--n-conv', default=3, type=int, metavar='N',
                     help='number of conv layers')
 parser.add_argument('--n-h', default=1, type=int, metavar='N',
                     help='number of hidden layers after pooling')
-
+parser.add_argument('--use-pdd', default=True, type=bool, metavar='PDD',
+                    help='Whether to use PDD graph or Crystal Graph')
 args = parser.parse_args(sys.argv[1:])
 
 args.cuda = not args.disable_cuda and torch.cuda.is_available()
@@ -90,9 +92,11 @@ else:
 
 def main():
     global args, best_mae_error
-
-    # load data
-    dataset = CIFData(*args.data_options)
+    print(args.use_pdd)
+    if args.use_pdd:
+        dataset = PDDData(*args.data_options)
+    else:
+        dataset = CIFData(*args.data_options)
     collate_fn = collate_pool
     train_loader, val_loader, test_loader = get_train_val_test_loader(
         dataset=dataset,
@@ -132,6 +136,7 @@ def main():
                                 n_conv=args.n_conv,
                                 h_fea_len=args.h_fea_len,
                                 n_h=args.n_h,
+                                use_weights=args.use_pdd,
                                 classification=True if args.task ==
                                                        'classification' else False)
     if args.cuda:
