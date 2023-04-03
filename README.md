@@ -1,3 +1,14 @@
+This is a forked repository of the original CGCNN implementation. This modified version of the repository implements the ability to use the Pointwise Distance Distribution Graph instead of the Crystal Graph. 
+
+For more details on the PDD graph see the paper: [Graph Representation of crystal structures using Point-wise Distance Distributions](https://arxiv.org/abs/2212.11246)
+
+We have included the rest of the original README below. In addition to the original package requirements, we additionally need:
+- [AMD](https://pypi.org/project/average-minimum-distance/)
+- [Scipy](https://pypi.org/project/scipy/)
+
+Parameters for the graph have been added to the command line options so that all testing can reproduced without changes to the codebase.
+
+
 # Crystal Graph Convolutional Neural Networks
 
 This software package implements the Crystal Graph Convolutional Neural Networks (CGCNN) that takes an arbitary crystal structure to predict material properties. 
