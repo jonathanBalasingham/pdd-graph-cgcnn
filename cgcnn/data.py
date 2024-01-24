@@ -499,95 +499,6 @@ class CIFData(Dataset):
         return (atom_fea, nbr_fea, nbr_fea_idx), target, cif_id
 
 
-def find_checkpoint(row, ps, pdd):
-    k = pdd.shape[1] - 1
-    rep_dist = pdd[row, -1]
-    start_of_range = pdd.shape[1] - 1
-    inds = None
-    groups = None
-    for i in range(1, pdd.shape[1] + 1):
-        if not np.isclose(pdd[row, -i], rep_dist):
-            start_of_range = pdd.shape[1] - i
-            break
-    while np.isclose(pdd[row, -1], pdd[row, -2]):
-        k += 1
-        pdd, groups, inds, _ = custom_PDD(ps, k=k, collapse=True)
-    inds = ps.types[inds[[i[0] for i in groups]] % ps.types.shape[0]]
-
-    return k, np.unique(inds[row, start_of_range + 1:k - 1]).shape[0] == 1
-
-
-def find_dup_start_range(row, pdd):
-    d = pdd[row, :]
-    last_dist = d[-1]
-    num_dups = 0
-    for entry in d[::-1]:
-        if np.isclose(entry, last_dist):
-            num_dups += 1
-    return num_dups
-
-
-def find_dup_range(row, ps, pdd):
-    k = pdd.shape[1]
-    start_of_range = pdd.shape[1] - find_dup_start_range(row, pdd)
-    last_dist = pdd[row, -1]
-    while np.isclose(pdd[row, -1], last_dist):
-        pdd, groups, inds, _ = custom_PDD(ps, k=k, collapse=True)
-        k += 1
-    end_of_range = k
-    return start_of_range, end_of_range + 1
-
-
-def check_valid(ps, pdd, cif):
-    dup_dist_rows = np.where(np.isclose(pdd[:, -1], pdd[:, -2]))[0]
-    if dup_dist_rows.shape[0] == 0:
-        return pdd.shape[1] - 1, True
-    checkpoints = []
-    group_okay = []
-
-    for row in dup_dist_rows:
-        new_k, valid = find_checkpoint(row, ps, pdd)
-        checkpoints.append(new_k)
-        group_okay.append(valid)
-    return np.sort(checkpoints)[0], np.all(group_okay)
-
-
-def plot_k_vs_neighbors(ps, row):
-    atom_types = []
-    r = (50, 4000)
-    ks = [i for i in range(r[0], r[1])]
-    pdd, groups, inds, _ = custom_PDD(ps, k=r[1], collapse=True, constrained=True)
-    print("total rows: " + str(pdd.shape[0]))
-    group_mapping = {j: i[0] for i in groups for j in i}
-    n1 = inds[[i[0] for i in groups]] % ps.types.shape[0]
-    for i in range(0, n1.shape[0]):
-        for j in range(0, n1.shape[1]):
-            n1[i, j] = group_mapping[n1[i, j]]
-    for k in ks:
-        # n1 = ps.types[inds[[i[0] for i in groups]] % ps.types.shape[0]][row][:k]
-        n = n1[row, 0:k]
-        counts = np.unique(n, return_counts=True)[1]
-        counts = counts / counts.sum()
-        atom_types.append(counts)
-    data = np.vstack(atom_types)
-    return data
-
-
-def plot_graph(ps):
-    import matplotlib.pyplot as plt
-    datum = []
-    for i in range(amd.PDD(ps, k=50).shape[0]):
-        datum.append(plot_k_vs_neighbors(ps, i))
-    fig, axs = plt.subplots(2, 2)
-    axs[0, 0].plot(datum[0])
-    axs[0, 0].set_title('Group 0')
-    axs[0, 1].plot(datum[1])
-    axs[0, 1].set_title('Group 1')
-    axs[1, 0].plot(datum[2])
-    axs[1, 0].set_title('Group 3')
-    axs[1, 1].plot(datum[3])
-    axs[1, 1].set_title('Group 3')
-
 
 def pdd_to_graph_compact(ps, pdd, inds, groups):
     indices_in_graph = [i[0] for i in groups]
@@ -603,6 +514,7 @@ def pdd_to_graph_compact(ps, pdd, inds, groups):
     return (atom_features,
             bond_features,
             inds)
+
 
 
 class PDDData(Dataset):
