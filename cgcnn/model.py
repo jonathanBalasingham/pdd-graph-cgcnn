@@ -3,7 +3,8 @@ from __future__ import print_function, division
 import torch
 import torch.nn as nn
 from .WeightedBatchNorm1d import *
-torch.manual_seed(1)
+#torch.manual_seed(1)
+
 
 class ConvLayer(nn.Module):
     """
@@ -33,7 +34,7 @@ class ConvLayer(nn.Module):
         self.bn2 = WeightedBatchNorm1d(self.atom_fea_len)
         self.softplus2 = nn.Softplus()
 
-    def forward(self, atom_in_fea, nbr_fea, nbr_fea_idx, weights=None):
+    def forward(self, atom_in_fea, nbr_fea, nbr_fea_idx, weights=None, edge_weights=None):
         """
         Forward pass
 
@@ -59,35 +60,23 @@ class ConvLayer(nn.Module):
         """
         # TODO will there be problems with the index zero padding?
         N, M = nbr_fea_idx.shape
+
         # convolution
-        atom_nbr_fea = atom_in_fea[nbr_fea_idx, :]
-        if weights is not None:
-          weights1 = weights.unsqueeze(1).expand(N, M, 1)
-          weights1 = weights1.reshape((-1, 1))
-        else:
-          weights1 = None
-        
-        total_nbr_fea = torch.cat(
-            [atom_in_fea.unsqueeze(1).expand(N, M, self.atom_fea_len),
-             atom_nbr_fea, nbr_fea], dim=2)
+        atom_nbr_fea = atom_in_fea[nbr_fea_idx, :].reshape((N, atom_in_fea.shape[-1] * 2))
+        total_nbr_fea = torch.cat([atom_nbr_fea, nbr_fea], axis=-1)
+
         total_gated_fea = self.fc_full(total_nbr_fea)
-        #print("total_gated_fea before BN: " + str(total_gated_fea.shape))
-        #print(total_gated_fea)
-        total_gated_fea = self.bn1(total_gated_fea.view(
-            -1, self.atom_fea_len*2), weights=weights1).view(N, M, self.atom_fea_len*2)
-        #print("total_gated_fea after BN: ")
-        #print(total_gated_fea)
-        nbr_filter, nbr_core = total_gated_fea.chunk(2, dim=2)
+
+        total_gated_fea = self.bn1(total_gated_fea, weights=edge_weights)
+
+        nbr_filter, nbr_core = total_gated_fea.chunk(2, dim=-1)
         nbr_filter = self.sigmoid(nbr_filter)
         nbr_core = self.softplus1(nbr_core)
-        nbr_sumed = torch.sum(nbr_filter * nbr_core, dim=1)
-        #print("Before second BN: ")
-        #print(nbr_sumed)
+        nbr_sumed = torch.zeros(atom_in_fea.shape, dtype=atom_in_fea.dtype, device=atom_in_fea.device)
+        nbr_sumed.index_add_(0, nbr_fea_idx[:, 0], nbr_filter * nbr_core)
+
         nbr_sumed = self.bn2(nbr_sumed, weights=weights)
-        #print("After second BN: ")
-        #print(nbr_sumed)
         out = self.softplus2(atom_in_fea + nbr_sumed)
-        # exit()
         return out
 
 
@@ -122,7 +111,8 @@ class CrystalGraphConvNet(nn.Module):
         self.use_weights = use_weights
         self.classification = classification
         if self.use_weights:
-          orig_atom_fea_len -= 1
+            orig_atom_fea_len -= 1
+            nbr_fea_len -= 1
         self.embedding = nn.Linear(orig_atom_fea_len, atom_fea_len)
         self.convs = nn.ModuleList([ConvLayer(atom_fea_len=atom_fea_len,
                                     nbr_fea_len=nbr_fea_len)
@@ -172,19 +162,20 @@ class CrystalGraphConvNet(nn.Module):
         if self.use_weights:
           weights = atom_fea[:, 0].reshape((-1, 1))
           atom_fea = atom_fea[:, 1:]
+          edge_weights = nbr_fea[:, -1].reshape((-1,1))
+          nbr_fea = nbr_fea[:, :-1]
           pf = torch.sum
         else:
           weights=None
           pf = torch.mean
         atom_fea = self.embedding(atom_fea)
         for conv_func in self.convs:
-            atom_fea = conv_func(atom_fea, nbr_fea, nbr_fea_idx, weights=weights)
+            atom_fea = conv_func(atom_fea, nbr_fea, nbr_fea_idx, weights=weights, edge_weights=edge_weights)
         if self.use_weights:
           crys_fea = self.pooling( atom_fea, crystal_atom_idx, pooling_func=pf, weights=weights)
         else:
           crys_fea = self.pooling(atom_fea, crystal_atom_idx, pooling_func=pf)
-        #print(crys_fea)
-        #exit()
+
         crys_fea = self.conv_to_fc(self.conv_to_fc_softplus(crys_fea))
         crys_fea = self.conv_to_fc_softplus(crys_fea)
         if self.classification:
@@ -214,10 +205,7 @@ class CrystalGraphConvNet(nn.Module):
         """
         assert sum([len(idx_map) for idx_map in crystal_atom_idx]) ==\
             atom_fea.data.shape[0]
-        #print(atom_fea)
         if weights is not None:
-            #print(weights[crystal_atom_idx[0]] / weights[crystal_atom_idx[0]].sum() * atom_fea[crystal_atom_idx[0]])
-            #print(crystal_atom_idx)
             summed_fea = [pooling_func(weights[idx_map] / weights[idx_map].sum() * atom_fea[idx_map], dim=0, keepdim=True) for idx_map in crystal_atom_idx]
         else:
             summed_fea = [pooling_func(atom_fea[idx_map], dim=0, keepdim=True) for idx_map in crystal_atom_idx]

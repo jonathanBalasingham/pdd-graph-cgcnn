@@ -18,14 +18,13 @@ from scipy.spatial.distance import pdist, squareform
 import collections
 
 
-
 def _collapse_into_groups(overlapping):
     """The vector `overlapping` indicates for each pair of items in a set whether 
     or not the items overlap, in the shape of a condensed distance matrix. Returns
     a list of groups of indices where all items in the same group overlap."""
 
     overlapping = squareform(overlapping)
-    group_nums = {} # row_ind: group number
+    group_nums = {}  # row_ind: group number
     group = 0
     for i, row in enumerate(overlapping):
         if i not in group_nums:
@@ -107,13 +106,14 @@ def custom_PDD(
     dists, cloud, inds = amd.nearest_neighbours(motif, cell, asymmetric_unit, k)
     groups = [[i] for i in range(len(dists))]
 
-    
     if collapse and collapse_tol >= 0:
         overlapping = pdist(dists, metric='chebyshev')
         overlapping = overlapping <= collapse_tol
-        types_match = pdist(periodic_set.types.reshape((-1,1))) == 0
+        types_match = pdist(periodic_set.types.reshape((-1, 1))) == 0
+        neighbors_match = (pdist(periodic_set.types[inds % periodic_set.types.shape[0]]) == 0)
+
         if constrained:
-            overlapping = overlapping & types_match
+            overlapping = overlapping & types_match & neighbors_match
         if overlapping.any():
             groups = _collapse_into_groups(overlapping)
             weights = np.array([sum(weights[group]) for group in groups])
@@ -146,17 +146,16 @@ def _extract_motif_cell(pset: amd.PeriodicSet):
         wyc_muls = pset.wyckoff_multiplicities
         if asym_unit is None or wyc_muls is None:
             asymmetric_unit = motif
-            weights = np.full((len(motif), ), 1 / len(motif))
+            weights = np.full((len(motif),), 1 / len(motif))
         else:
             asymmetric_unit = pset.motif[asym_unit]
             weights = wyc_muls / np.sum(wyc_muls)
     else:
         motif, cell = pset
         asymmetric_unit = motif
-        weights = np.full((len(motif), ), 1 / len(motif))
+        weights = np.full((len(motif),), 1 / len(motif))
 
     return motif, cell, asymmetric_unit, weights
-
 
 
 def get_train_val_test_loader(dataset, collate_fn=default_collate,
@@ -276,13 +275,13 @@ def collate_pool(dataset_list):
     crystal_atom_idx, batch_target = [], []
     batch_cif_ids = []
     base_idx = 0
-    for i, ((atom_fea, nbr_fea, nbr_fea_idx), target, cif_id)\
+    for i, ((atom_fea, nbr_fea, nbr_fea_idx), target, cif_id) \
             in enumerate(dataset_list):
         n_i = atom_fea.shape[0]  # number of atoms for this crystal
         batch_atom_fea.append(atom_fea)
         batch_nbr_fea.append(nbr_fea)
-        batch_nbr_fea_idx.append(nbr_fea_idx+base_idx)
-        new_idx = torch.LongTensor(np.arange(n_i)+base_idx)
+        batch_nbr_fea_idx.append(nbr_fea_idx + base_idx)
+        new_idx = torch.LongTensor(np.arange(n_i) + base_idx)
         crystal_atom_idx.append(new_idx)
         batch_target.append(target)
         batch_cif_ids.append(cif_id)
@@ -290,9 +289,9 @@ def collate_pool(dataset_list):
     return (torch.cat(batch_atom_fea, dim=0),
             torch.cat(batch_nbr_fea, dim=0),
             torch.cat(batch_nbr_fea_idx, dim=0),
-            crystal_atom_idx),\
-        torch.stack(batch_target, dim=0),\
-        batch_cif_ids
+            crystal_atom_idx), \
+           torch.stack(batch_target, dim=0), \
+           batch_cif_ids
 
 
 class GaussianDistance(object):
@@ -301,6 +300,7 @@ class GaussianDistance(object):
 
     Unit: angstrom
     """
+
     def __init__(self, dmin, dmax, step, var=None):
         """
         Parameters
@@ -315,7 +315,7 @@ class GaussianDistance(object):
         """
         assert dmin < dmax
         assert dmax - dmin > step
-        self.filter = np.arange(dmin, dmax+step, step)
+        self.filter = np.arange(dmin, dmax + step, step)
         if var is None:
             var = step
         self.var = var
@@ -336,8 +336,8 @@ class GaussianDistance(object):
           Expanded distance matrix with the last dimension of length
           len(self.filter)
         """
-        return np.exp(-(distances[..., np.newaxis] - self.filter)**2 /
-                      self.var**2)
+        return np.exp(-(distances[..., np.newaxis] - self.filter) ** 2 /
+                      self.var ** 2)
 
 
 class AtomInitializer(object):
@@ -346,6 +346,7 @@ class AtomInitializer(object):
 
     !!! Use one AtomInitializer per dataset !!!
     """
+
     def __init__(self, atom_types):
         self.atom_types = set(atom_types)
         self._embedding = {}
@@ -382,6 +383,7 @@ class AtomCustomJSONInitializer(AtomInitializer):
     elem_embedding_file: str
         The path to the .json file
     """
+
     def __init__(self, elem_embedding_file):
         with open(elem_embedding_file) as f:
             elem_embedding = json.load(f)
@@ -391,7 +393,6 @@ class AtomCustomJSONInitializer(AtomInitializer):
         super(AtomCustomJSONInitializer, self).__init__(atom_types)
         for key, value in elem_embedding.items():
             self._embedding[key] = np.array(value, dtype=float)
-
 
 
 class CIFData(Dataset):
@@ -442,6 +443,7 @@ class CIFData(Dataset):
     target: torch.Tensor shape (1, )
     cif_id: str or int
     """
+
     def __init__(self, root_dir, max_num_nbr=12, radius=8, dmin=0, step=0.2,
                  random_seed=123):
         self.root_dir = root_dir
@@ -466,8 +468,8 @@ class CIFData(Dataset):
     @functools.lru_cache(maxsize=None)  # Cache loaded structures
     def __getitem__(self, idx):
         cif_id, target = self.id_prop_data[idx]
-        crystal = Structure.from_file(os.path.join(self.root_dir,cif_id+'.cif'))
-        #print(cif_id)
+        crystal = Structure.from_file(os.path.join(self.root_dir, cif_id + '.cif'))
+        # print(cif_id)
         if cif_id in self.ids_to_supercell:
             crystal.make_supercell(2)
         atom_fea = np.vstack([self.ari.get_atom_fea(crystal[i].specie.number) for i in range(len(crystal))])
@@ -478,13 +480,13 @@ class CIFData(Dataset):
         for nbr in all_nbrs:
             if len(nbr) < self.max_num_nbr:
                 warnings.warn('{} not find enough neighbors to build graph. '
-                                'If it happens frequently, consider increase '
-                                'radius.'.format(cif_id))
+                              'If it happens frequently, consider increase '
+                              'radius.'.format(cif_id))
                 nbr_fea_idx.append(list(map(lambda x: x[2], nbr)) +
-                                    [0] * (self.max_num_nbr - len(nbr)))
+                                   [0] * (self.max_num_nbr - len(nbr)))
                 nbr_fea.append(list(map(lambda x: x[1], nbr)) +
-                                [self.radius + 1.] * (self.max_num_nbr -
-                                                        len(nbr)))
+                               [self.radius + 1.] * (self.max_num_nbr -
+                                                     len(nbr)))
             else:
                 nbr_fea_idx.append(list(map(lambda x: x[2], nbr[:self.max_num_nbr])))
                 nbr_fea.append(list(map(lambda x: x[1], nbr[:self.max_num_nbr])))
@@ -497,20 +499,110 @@ class CIFData(Dataset):
         return (atom_fea, nbr_fea, nbr_fea_idx), target, cif_id
 
 
+def find_checkpoint(row, ps, pdd):
+    k = pdd.shape[1] - 1
+    rep_dist = pdd[row, -1]
+    start_of_range = pdd.shape[1] - 1
+    inds = None
+    groups = None
+    for i in range(1, pdd.shape[1] + 1):
+        if not np.isclose(pdd[row, -i], rep_dist):
+            start_of_range = pdd.shape[1] - i
+            break
+    while np.isclose(pdd[row, -1], pdd[row, -2]):
+        k += 1
+        pdd, groups, inds, _ = custom_PDD(ps, k=k, collapse=True)
+    inds = ps.types[inds[[i[0] for i in groups]] % ps.types.shape[0]]
+
+    return k, np.unique(inds[row, start_of_range + 1:k - 1]).shape[0] == 1
+
+
+def find_dup_start_range(row, pdd):
+    d = pdd[row, :]
+    last_dist = d[-1]
+    num_dups = 0
+    for entry in d[::-1]:
+        if np.isclose(entry, last_dist):
+            num_dups += 1
+    return num_dups
+
+
+def find_dup_range(row, ps, pdd):
+    k = pdd.shape[1]
+    start_of_range = pdd.shape[1] - find_dup_start_range(row, pdd)
+    last_dist = pdd[row, -1]
+    while np.isclose(pdd[row, -1], last_dist):
+        pdd, groups, inds, _ = custom_PDD(ps, k=k, collapse=True)
+        k += 1
+    end_of_range = k
+    return start_of_range, end_of_range + 1
+
+
+def check_valid(ps, pdd, cif):
+    dup_dist_rows = np.where(np.isclose(pdd[:, -1], pdd[:, -2]))[0]
+    if dup_dist_rows.shape[0] == 0:
+        return pdd.shape[1] - 1, True
+    checkpoints = []
+    group_okay = []
+
+    for row in dup_dist_rows:
+        new_k, valid = find_checkpoint(row, ps, pdd)
+        checkpoints.append(new_k)
+        group_okay.append(valid)
+    return np.sort(checkpoints)[0], np.all(group_okay)
+
+
+def plot_k_vs_neighbors(ps, row):
+    atom_types = []
+    r = (50, 4000)
+    ks = [i for i in range(r[0], r[1])]
+    pdd, groups, inds, _ = custom_PDD(ps, k=r[1], collapse=True, constrained=True)
+    print("total rows: " + str(pdd.shape[0]))
+    group_mapping = {j: i[0] for i in groups for j in i}
+    n1 = inds[[i[0] for i in groups]] % ps.types.shape[0]
+    for i in range(0, n1.shape[0]):
+        for j in range(0, n1.shape[1]):
+            n1[i, j] = group_mapping[n1[i, j]]
+    for k in ks:
+        # n1 = ps.types[inds[[i[0] for i in groups]] % ps.types.shape[0]][row][:k]
+        n = n1[row, 0:k]
+        counts = np.unique(n, return_counts=True)[1]
+        counts = counts / counts.sum()
+        atom_types.append(counts)
+    data = np.vstack(atom_types)
+    return data
+
+
+def plot_graph(ps):
+    import matplotlib.pyplot as plt
+    datum = []
+    for i in range(amd.PDD(ps, k=50).shape[0]):
+        datum.append(plot_k_vs_neighbors(ps, i))
+    fig, axs = plt.subplots(2, 2)
+    axs[0, 0].plot(datum[0])
+    axs[0, 0].set_title('Group 0')
+    axs[0, 1].plot(datum[1])
+    axs[0, 1].set_title('Group 1')
+    axs[1, 0].plot(datum[2])
+    axs[1, 0].set_title('Group 3')
+    axs[1, 1].plot(datum[3])
+    axs[1, 1].set_title('Group 3')
+
 
 def pdd_to_graph_compact(ps, pdd, inds, groups):
     indices_in_graph = [i[0] for i in groups]
     atom_features = ps.types[indices_in_graph]
-    bond_features = pdd[:, 1:]
+    bond_features = pdd[:, 1:].reshape((-1, 1))
     inds = inds % ps.types.shape[0]
     inds = inds[indices_in_graph]
-    group_mapping = {j:i[0] for i in groups for j in i}
-    d = {b:a for a,b in enumerate(indices_in_graph)}
+    group_mapping = {j: i[0] for i in groups for j in i}
+    d = {b: a for a, b in enumerate(indices_in_graph)}
     inds = np.array([d[group_mapping[i]] for i in inds.flatten()]).reshape(inds.shape)
+    outgoing_nodes = np.array([i for i in range(pdd.shape[0]) for _ in range(pdd.shape[1] - 1)])
+    inds = np.concatenate([outgoing_nodes.reshape((-1, 1)), inds.reshape((-1, 1))], axis=1)
     return (atom_features,
-            bond_features, 
+            bond_features,
             inds)
-
 
 
 class PDDData(Dataset):
@@ -561,11 +653,13 @@ class PDDData(Dataset):
     target: torch.Tensor shape (1, )
     cif_id: str or int
     """
-    def __init__(self, root_dir, max_num_nbr=12, collapse_tol=1e-4, constrained=False, radius=8, dmin=0, step=0.2,
+
+    def __init__(self, root_dir, max_num_nbr=12, collapse_tol=1e-4, constrained=True, radius=8, dmin=0, step=.2,
+                 # step=0.2,
                  random_seed=123):
         self.root_dir = root_dir
-        
-        self.max_num_nbr, self.radius = int(max_num_nbr), radius
+
+        self.max_num_nbr, self.radius = int(max_num_nbr), int(radius)
         assert os.path.exists(root_dir), 'root_dir does not exist!'
         id_prop_file = os.path.join(self.root_dir, 'id_prop.csv')
         assert os.path.exists(id_prop_file), 'id_prop.csv does not exist!'
@@ -580,8 +674,10 @@ class PDDData(Dataset):
         self.ari = AtomCustomJSONInitializer(atom_init_file)
         self.gdf = GaussianDistance(dmin=dmin, dmax=self.radius, step=step)
         self.collapse_tol = float(collapse_tol)
-        self.constrained = constrained
-        print("Col tol is " + str(collapse_tol))
+        if type(constrained) == bool:
+            self.constrained = constrained
+        else:
+            self.constrained = constrained == 'True'
 
     def __len__(self):
         return len(self.id_prop_data)
@@ -589,20 +685,26 @@ class PDDData(Dataset):
     @functools.lru_cache(maxsize=None)  # Cache loaded structures
     def __getitem__(self, idx):
         cif_id, target = self.id_prop_data[idx]
-        #print(cif_id)
-        reader = amd.CifReader(os.path.join(self.root_dir,cif_id+'.cif'))
+        reader = amd.CifReader(os.path.join(self.root_dir, cif_id + '.cif'))
         ps = reader.read()
-        pdd, groups, inds, _ = custom_PDD(ps, k=self.max_num_nbr, collapse=True, collapse_tol=self.collapse_tol, constrained=self.constrained)
-        weights = pdd[:, 0].reshape((-1,1))
-        atom_fea, nbr_fea, nbr_fea_idx = pdd_to_graph_compact(ps, pdd, inds, groups)        
-        
+
+        pdd, groups, inds, cloud = custom_PDD(ps, k=self.max_num_nbr, collapse=True, collapse_tol=self.collapse_tol,
+                                              constrained=self.constrained, lexsort=False)
+
+        weights = pdd[:, 0].reshape((-1, 1))
+        atom_fea, nbr_fea, nbr_fea_idx = pdd_to_graph_compact(ps, pdd, inds, groups)
+
         atom_fea = np.vstack([self.ari.get_atom_fea(i) for i in atom_fea])
         atom_fea = np.concatenate([weights, atom_fea], axis=1)
         atom_fea = torch.Tensor(atom_fea)
-        #nbr_fea = weights * nbr_fea
+
         nbr_fea = self.gdf.expand(nbr_fea)
+        edge_weights = np.zeros((nbr_fea.shape[0], 1))
+
+        edge_weights[:, 0] = np.repeat(weights, pdd.shape[1] - 1)
+        edge_weights = edge_weights / edge_weights.sum()
         atom_fea = torch.Tensor(atom_fea)
-        nbr_fea = torch.Tensor(nbr_fea)
+        nbr_fea = torch.Tensor(np.concatenate([nbr_fea.squeeze(1), edge_weights], axis=1))
         nbr_fea_idx = torch.LongTensor(nbr_fea_idx)
         target = torch.Tensor([float(target)])
         return (atom_fea, nbr_fea, nbr_fea_idx), target, cif_id
